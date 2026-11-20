@@ -1,26 +1,26 @@
 <div align="center">
 
-# cMD & GaMD of Lysozyme in GROMACS
+# cMD & GaMD of Lysozyme and LCC in GROMACS
 
 ![GROMACS](https://img.shields.io/badge/GROMACS-2021%2B-4b8bbe?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20GPU-black?style=flat-square)
 
-A reproducible GROMACS workflow that prepares hen egg-white lysozyme (PDB [1AKI](https://www.rcsb.org/structure/1AKI)), equilibrates it, then runs **50 ns of conventional MD (cMD)** and **50 ns of Gaussian accelerated MD (GaMD)** from an identical starting state.
+Two self-contained instances of one reproducible GROMACS workflow: hen egg-white lysozyme (PDB [1AKI](https://www.rcsb.org/structure/1AKI)) at the repository root, and the engineered PET-depolymerase cutinase LCC (PDB [6THT](https://www.rcsb.org/structure/6THT)) in [`lcc_sample/`](lcc_sample/). Each prepares its structure, equilibrates it, then runs **50 ns of conventional MD (cMD)** and **50 ns of Gaussian accelerated MD (GaMD)** from an identical starting state.
 
-[Overview](#overview) • [Requirements](#requirements) • [Configuration](#configuration) • [Running](#running) • [Simulation setup](#simulation-setup) • [Outputs](#outputs)
+[Overview](#overview) • [Repository layout](#repository-layout) • [Requirements](#requirements) • [Configuration](#configuration) • [Running](#running) • [Simulation setup](#simulation-setup) • [Outputs](#outputs)
 
 </div>
 
 ## Overview
 
-The pipeline takes a cleaned lysozyme structure through the standard GROMACS preparation steps (solvation, ionization, minimization, NVT/NPT equilibration), then branches into two production runs that share the same equilibrated coordinates:
+Each sample takes a cleaned protein structure through the standard GROMACS preparation steps (solvation, ionization, minimization, NVT/NPT equilibration), then branches into two production runs that share the same equilibrated coordinates:
 
 - **cMD** — a 50 ns unbiased simulation, serving as the reference.
 - **GaMD** — a 1 ns GaMD equilibration (boost parameter collection) followed by a 50 ns production run with dual boost applied. GaMD does not speed up the dynamics itself; it smooths the potential energy surface so that rare conformational states are sampled more often within the same amount of simulation time.
 
 ```mermaid
 flowchart TD
-    A["structures/1AKI_clean.pdb"] --> B["Solvation & ionization<br/>(TIP3P, Na+/Cl-)"]
+    A["Cleaned structure<br/>1AKI_clean.pdb or 6THT_apo.pdb"] --> B["Solvation & ionization<br/>(TIP3P, Na+/Cl-)"]
     B --> C["Energy minimization"]
     C --> D["NVT 100 ps<br/>298 K, position restraints"]
     D --> E["NPT 500 ps<br/>1 bar, position restraints"]
@@ -29,9 +29,29 @@ flowchart TD
     G --> H["GaMD production 50 ns<br/>dual boost"]
 ```
 
+## Repository layout
+
+```
+.
+├── run.sh              # lysozyme pipeline — run from the repository root
+├── inputs/             # .mdp and gamd.in parameter files
+├── structures/
+│   ├── 1AKI.pdb        # as deposited (waters included)
+│   └── 1AKI_clean.pdb  # protein only — used by the script
+└── lcc_sample/         # second, fully self-contained instance for LCC
+    ├── run.sh          # run from inside lcc_sample/
+    ├── inputs/         # same protocol, only the title lines differ
+    └── structures/
+        ├── 6THT.pdb        # as deposited (ligands + waters included)
+        └── 6THT_apo.pdb    # protein only — used by the script
+```
+
+Each sample carries its own script, parameter files and structures, and writes its outputs into its own directory tree, so the two runs never touch each other's files.
+
 ## Features
 
 - **Fair comparison**: both cMD and GaMD start from the exact same minimized, equilibrated structure.
+- **Two systems, one protocol**: [`lcc_sample/`](lcc_sample/) repeats the whole workflow for LCC (6THT, chain A residues 36–293) with numerically identical simulation parameters.
 - **Dual-boost GaMD**: `igamd 3` applies boost to the total potential and to dihedral energies, with a target threshold of `σ₀ = 6.0 kcal/mol` for both boost potentials.
 - **GPU-offloaded production**: `mdrun` runs with `-nb gpu -pme gpu -bonded gpu -update gpu` (1 MPI rank × 8 OpenMP threads by default).
 - **Single-command pipeline**: one `run.sh` drives every stage, aborting on the first failure (`set -e`).
@@ -65,22 +85,26 @@ PIN=on
 > [!IMPORTANT]
 > `GROMACS` is a placeholder — replace it with the path to your `gmx` executable (e.g. `/opt/gromacs/bin/gmx`) or the pipeline will fail immediately.
 
+The LCC sample has its own copy of the script at [`lcc_sample/run.sh`](lcc_sample/run.sh), pre-set to `PDB="structures/6THT_apo.pdb"` — set its `GROMACS` path as well.
+
 > [!TIP]
 > `pdb2gmx` is called without `-ff`, so it prompts for a force field interactively. The `.mdp` files were written for **OPLS/AA**, so select it when prompted, or add `-ff oplsaa -water tip3p` to the `pdb2gmx` call in `run.sh` to make the run fully non-interactive.
 
 ## Running
 
-From the repository root:
+Each script must be run from its own directory, since all paths are relative:
 
 ```bash
-chmod +x run.sh   # first time only
-./run.sh
+chmod +x run.sh lcc_sample/run.sh   # first time only
+
+./run.sh                            # lysozyme — repository root
+cd lcc_sample && ./run.sh           # LCC (6THT)
 ```
 
 The script prints a timestamp around each `mdrun` call so wall-clock timings are visible in the terminal output, and finishes with `ALL DONE`.
 
 > [!WARNING]
-> The script aborts on the first error (`set -e`) and uses a plain `mkdir` for `cMD/`, so re-running it in a directory that already contains output stops immediately. Start from a clean checkout, or remove the generated output directories before a re-run.
+> The script aborts on the first error (`set -e`) and uses a plain `mkdir` for `cMD/`, so re-running a sample in a directory that already contains output stops immediately. Start from a clean checkout, or remove the generated output directories before a re-run.
 
 ## Simulation setup
 
@@ -94,6 +118,9 @@ All dynamics run in a **cubic box with 1.2 nm clearance**, periodic boundary con
 | Thermostat | V-rescale, 298 K, τ = 1.0 ps |
 | Barostat | C-rescale, isotropic, 1 bar, τ = 5.0 ps |
 | Coordinate saving | every 10 ps (whole system) |
+
+> [!NOTE]
+> The `.mdp` files under `inputs/` and [`lcc_sample/inputs/`](lcc_sample/inputs/) are identical apart from the `title` comment lines, so lysozyme and LCC are simulated under exactly the same protocol.
 
 Stages executed by `run.sh`:
 
@@ -126,7 +153,7 @@ The restart files (`gamd-restart.dat`, `gamd-restart-prev.dat`) generated during
 
 ## Outputs
 
-Each production stage writes into its own directory to keep cMD and GaMD artifacts separate:
+Each production stage writes into its own directory to keep cMD and GaMD artifacts separate. The LCC run produces the same set of directories under `lcc_sample/`:
 
 ```
 cMD/        md_50ns.{xtc,cpt,edr,log,gro}   # conventional MD
@@ -141,5 +168,7 @@ The compressed `.xtc` trajectories contain the whole system at 10 ps intervals. 
 ## References
 
 - [1AKI — Hen egg-white lysozyme, orthorhombic form, 1.5 Å](https://www.rcsb.org/structure/1AKI)
+- [6THT — LCC quintuple variant, PET depolymerase](https://www.rcsb.org/structure/6THT)
 - Dual-boost GaMD method: Pang, Y.; Miao, Y.; Wang, Y.; McCammon, J. A. [_Gaussian Accelerated Molecular Dynamics in NAMD_](https://doi.org/10.1021/acs.jctc.6b00931). J. Chem. Theory Comput. **2017**, 13, 9–19.
+- LCC structure and engineering: Tournier, V.; Topham, C. M.; Gilles, A.; et al. [_An engineered PET depolymerase to break down and recycle plastic bottles_](https://doi.org/10.1038/s41586-020-2149-4). Nature **2020**, 580, 216–219.
 - [GROMACS documentation](https://manual.gromacs.org/)
